@@ -1,5 +1,5 @@
 <p float="left">
-    <img src="dataset/img/icon_kit.png" width="10%" hspace="20"/>
+    <img src="icon_kit.png" width="10%" hspace="20"/>
 </p>
 
 [![Python](https://img.shields.io/badge/Python-3.12.8-blue?logo=python)](https://www.python.org/downloads/release/python-3918/)

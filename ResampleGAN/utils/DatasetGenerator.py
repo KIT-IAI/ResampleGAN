@@ -6,7 +6,7 @@ import random
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C, WhiteKernel, Matern
 
 
 def normalize_pair(x_input, x_output, minmax_scaler):
@@ -59,6 +59,59 @@ def interpolate_sequence(x_input, input_length, output_length, kind='linear'):
 
     return x_initial
 
+
+def interpolate_sequence_gp(x_input, input_length, output_length, kernel=None, alpha=0, normalize_y=True):
+    """
+    Interpolate a sequence from input_length to output_length using Gaussian Process regression
+
+    Args:
+        x_input (numpy.ndarray): Input sequence data with shape (input_length, features)
+        input_length (int): Original sequence length
+        output_length (int): Target sequence length after interpolation
+        kernel: Gaussian Process kernel (default: RBF with optimized hyperparameters)
+        alpha (float): Noise level parameter for GP (regularization)
+        normalize_y (bool): Whether to normalize target values before fitting
+
+    Returns:
+        numpy.ndarray: Interpolated sequence with shape (output_length, features)
+    """
+    # Original time points (normalized to [0, 1] for better GP performance)
+    x = np.linspace(0, 1, input_length).reshape(-1, 1)
+    # New time points for interpolation
+    x_new = np.linspace(0, 1, output_length).reshape(-1, 1)
+
+    # Initialize output array
+    x_initial = np.zeros((output_length, x_input.shape[1]))
+
+    # Default kernel if not provided: RBF with automatic hyperparameter optimization
+    if kernel is None:
+        # Composite kernel: constant * RBF + white noise
+        # This provides flexibility in modeling both smooth patterns and noise
+        kernel = C(1.0, (1e-3, 1e3)) * Matern(length_scale=1.0, length_scale_bounds=(1e-3, 1e3), nu=0.5)
+
+    # Interpolate each feature column separately using GP
+    for c in range(x_input.shape[1]):
+        # Get the values for this feature
+        y = x_input[:, c].reshape(-1, 1)
+
+        # Create and fit the Gaussian Process model
+        gp = GaussianProcessRegressor(
+            kernel=kernel,
+            alpha=alpha,
+            normalize_y=normalize_y,
+            n_restarts_optimizer=2  # Multiple restarts for better hyperparameter optimization
+        )
+
+        # Fit the GP model to the original points
+        gp.fit(x, y)
+
+        # Predict at new points (use only mean prediction)
+        y_pred, _ = gp.predict(x_new, return_std=True)
+
+        # Store the interpolated values
+        x_initial[:, c] = y_pred.flatten()
+
+    return x_initial
 
 def downsample_sequence(x_input, input_length, output_length):
     """
@@ -205,6 +258,7 @@ class DatasetGenerator(Dataset):
         self.x_slinear_list = []  # Linear spline interpolation
         self.x_cubic_list = []  # Cubic interpolation
         self.x_quad_list = []  # Quadratic interpolation
+        self.x_gp_list = []  # Gaussian Process interpolation
 
         # Generate windowed sequences if use_window is True
         if use_window:
@@ -237,6 +291,8 @@ class DatasetGenerator(Dataset):
         self.x_slinear_list = np.array(self.x_slinear_list, dtype=np.float32)
         self.x_cubic_list = np.array(self.x_cubic_list, dtype=np.float32)
         self.x_quad_list = np.array(self.x_quad_list, dtype=np.float32)
+        self.x_gp_list = np.array(self.x_gp_list, dtype=np.float32)
+        print(f"interpolate done")
 
     def _process_window(self, df_in, df_out):
         """
@@ -278,9 +334,11 @@ class DatasetGenerator(Dataset):
                 x_slinear = interpolate_sequence(x_input, self.input_length, self.output_length, kind='slinear')
                 x_cubic = interpolate_sequence(x_input, self.input_length, self.output_length, kind='cubic')
                 x_quad = interpolate_sequence(x_input, self.input_length, self.output_length, kind='quadratic')
+                x_gp = interpolate_sequence_gp(x_input, self.input_length, self.output_length)
                 self.x_slinear_list.append(x_slinear)
                 self.x_cubic_list.append(x_cubic)
                 self.x_quad_list.append(x_quad)
+                self.x_gp_list.append(x_gp)
 
         elif self.output_length < self.input_length:
             # Downsample: average input values to match output length
@@ -327,8 +385,9 @@ class DatasetGenerator(Dataset):
             x_slinear = torch.FloatTensor(self.x_slinear_list[idx])
             x_cubic = torch.FloatTensor(self.x_cubic_list[idx])
             x_quad = torch.FloatTensor(self.x_quad_list[idx])
+            x_gp = torch.FloatTensor(self.x_gp_list[idx])
             return x_input, x_initial, x_initial_mask, x_output, self.mask, [self.s_in, self.s_out], [x_slinear,
-                                                                                                      x_cubic, x_quad]
+                                                                                                      x_cubic, x_quad, x_gp]
 
         return x_input, x_initial, x_initial_mask, x_output, self.mask, [self.s_in, self.s_out]
 
